@@ -1,0 +1,28 @@
+{
+  "name": "kubecon-endpointslice-demo",
+  "version": "1.0.0",
+  "description": "Zero-dependency hold + lease + free-pool router over the Kubernetes EndpointSlice API. The live demo from the KubeCon + CloudNativeCon India 2026 talk \"Why We Ditched Kube-proxy\": hold a request until a browser pod is free, lease it exclusively, and dial the pod IP directly.",
+  "license": "MIT",
+  "author": "Rajat Khanna",
+  "homepage": "https://github.com/legalimpurity/kubecon-endpointslice-demo#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/legalimpurity/kubecon-endpointslice-demo.git"
+  },
+  "keywords": [
+    "kubernetes",
+    "endpointslice",
+    "kube-proxy",
+    "headless-browser",
+    "load-balancing",
+    "scaling",
+    "cloud-native",
+    "kubecon"
+  ],
+  "scripts": {
+    "test": "node test/router.smoke.js && node test/worker-drain.smoke.js && node test/router-integration.smoke.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

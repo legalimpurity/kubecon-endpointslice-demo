@@ -1,0 +1,10 @@
+node_modules/
+*.log
+*.tmp
+.DS_Store
+.idea/
+.vscode/
+
+# rendered QA/preview images — not part of the demo
+*.jpg
+*.jpeg

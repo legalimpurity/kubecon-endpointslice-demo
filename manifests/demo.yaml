@@ -1,0 +1,143 @@
+# All-in-one manifests for the Minikube live demo (laptop-sized).
+# router.js / worker.js are mounted from a ConfigMap created by scripts/demo.sh
+# (--from-file=./router.js,./worker.js) — the kit is self-contained.
+#
+# Shape: one headless Service publishes the worker pods' EndpointSlices; the router
+# watches them, keeps an in-memory free-pool, holds callers until a browser is free,
+# and dials pod IPs directly, bypassing the ClusterIP/kube-proxy path for this one hop.
+# It demonstrates the hold/lease design.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: bf-demo
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: demo-router
+  namespace: bf-demo
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: endpointslice-reader
+  namespace: bf-demo
+rules:
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: demo-router-endpointslices
+  namespace: bf-demo
+subjects:
+  - { kind: ServiceAccount, name: demo-router, namespace: bf-demo }
+roleRef:
+  { kind: Role, name: endpointslice-reader, apiGroup: rbac.authorization.k8s.io }
+---
+# ---- fake browsers ----
+# Starts at 0 replicas: Act 1 opens with an EMPTY pool so the first request is HELD,
+# then scales 0 -> 1 to show the held request landing on the browser that just appeared.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: bf-demo
+spec:
+  replicas: 0
+  selector:
+    matchLabels: { app: browser }
+  template:
+    metadata:
+      labels: { app: browser }
+    spec:
+      terminationGracePeriodSeconds: 30   # room for a busy browser to drain its in-flight job
+      containers:
+        - name: worker
+          image: node:20-alpine
+          imagePullPolicy: IfNotPresent   # pre-pulled via `minikube image pull` (see README)
+          command: ["node", "/app/worker.js"]
+          env:
+            - { name: PORT, value: "8080" }
+            - { name: LATENCY_MIN_MS, value: "10000" }    # floor: every job runs >= 10s (visible busy window; easy mid-session kill)
+            - { name: LATENCY_MEDIAN_MS, value: "10000" } # ~10-13s jobs
+            - { name: LATENCY_SIGMA, value: "0.2" }
+            - { name: READY_MS, value: "1500" }     # brief cold start before /healthz = 200
+            - { name: COLD_JOB_MS, value: "0" }      # set >0 to demo "Ready but not warm"
+          ports: [{ containerPort: 8080 }]
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            periodSeconds: 2
+            initialDelaySeconds: 0
+          resources:
+            requests: { cpu: 5m, memory: 16Mi }
+            limits: { cpu: 50m, memory: 48Mi }
+          volumeMounts: [{ name: app, mountPath: /app }]
+      volumes:
+        - name: app
+          configMap: { name: demo-app }
+---
+# Headless Service: publishes the worker EndpointSlices the router watches.
+apiVersion: v1
+kind: Service
+metadata:
+  name: worker-headless
+  namespace: bf-demo
+spec:
+  clusterIP: None
+  selector: { app: browser }
+  ports: [{ port: 8080, targetPort: 8080 }]
+---
+# ---- the hold/lease router ----
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-router
+  namespace: bf-demo
+spec:
+  replicas: 1            # one pod -> its log narrates hold/lease/re-queue; Act 2 kills it on purpose
+  selector:
+    matchLabels: { app: demo-router }
+  template:
+    metadata:
+      labels: { app: demo-router }
+    spec:
+      serviceAccountName: demo-router
+      containers:
+        - name: router
+          image: node:20-alpine
+          imagePullPolicy: IfNotPresent
+          command: ["node", "/app/router.js"]
+          env:
+            - { name: SERVICE_NAME, value: "worker-headless" }
+            - { name: NAMESPACE, value: "bf-demo" }
+            - { name: POOL_NAME, value: "browsers" }
+            - { name: TARGET_PORT, value: "8080" }
+            - { name: PORT, value: "8081" }
+            - { name: DIAL_TIMEOUT_MS, value: "30000" }   # dial budget: a socket-idle timeout, so it MUST exceed the worker's longest job (p99 ~16s) or a healthy >=10s render is misread as a mid-session death
+            - { name: SETASIDE_MS, value: "3000" }
+            - { name: MAX_HOLD_MS, value: "120000" }   # up to 2 min: a held Act-1 request waits through your narration
+          ports: [{ containerPort: 8081 }]
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8081 }
+            periodSeconds: 2
+          resources:
+            requests: { cpu: 100m, memory: 96Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+          volumeMounts: [{ name: app, mountPath: /app }]
+      volumes:
+        - name: app
+          configMap: { name: demo-app }
+---
+# The entry point: a NodePort that fronts the router.
+apiVersion: v1
+kind: Service
+metadata:
+  name: demo-router
+  namespace: bf-demo
+spec:
+  type: NodePort
+  selector: { app: demo-router }
+  ports: [{ port: 8081, targetPort: 8081, nodePort: 30081 }]
